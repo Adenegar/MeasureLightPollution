@@ -441,6 +441,7 @@ def calibrate_direction(
         X_train, Y_train = load_points("Centroid", direction, start_date_param)
         model = FisheyeCorrectionModel(model_type=config.model_type)
         model.train(X_train, Y_train)
+        model.train_inverse(Y_train, X_train)
         date_info = "all dates" if config.start_date == "all" else config.start_date
         print(f"Loaded model with {len(X_train)} points from {date_info}")
     except FileNotFoundError:
@@ -448,6 +449,7 @@ def calibrate_direction(
             X_train, Y_train = load_points("Manual", direction, start_date_param)
             model = FisheyeCorrectionModel(model_type=config.model_type)
             model.train(X_train, Y_train)
+            model.train_inverse(Y_train, X_train)
             print(f"Loaded model with {len(X_train)} manual points")
         except FileNotFoundError:
             raise ValueError(
@@ -506,6 +508,29 @@ def save_distort_matrix(
     return output_path
 
 
+def save_distort_inv_matrix(
+    model: FisheyeCorrectionModel,
+    direction: str,
+    output_dir: Path,
+) -> Path:
+    """
+    Save the inverse Distort matrix to a numpy file.
+
+    Args:
+        model: Trained model with Distort_inv matrix
+        direction: Camera direction
+        output_dir: Output directory
+
+    Returns:
+        Path to saved file
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{direction.lower()}_distort_inv.npy"
+    np.save(output_path, model.Distort_inv)
+    print(f"Saved Distort_inv matrix to: {output_path}")
+    return output_path
+
+
 def save_centroids_csv(
     centroids_df: pd.DataFrame,
     direction: str,
@@ -557,8 +582,9 @@ def run_calibration(config: CalibrationConfig) -> dict:
         model, centroids_df, brightness_cal = calibrate_direction(direction, config)
         models[direction] = model
 
-        # Save Distort matrix
+        # Save Distort matrices
         save_distort_matrix(model, direction, config.output_dir)
+        save_distort_inv_matrix(model, direction, config.output_dir)
 
         # Save centroids if requested
         if centroids_df is not None:

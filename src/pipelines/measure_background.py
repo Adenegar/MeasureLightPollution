@@ -70,7 +70,7 @@ GROUND_MASK_POLYGONS = {
     ],
 }
 
-GRID_SIZE = 25  # pixels per grid cell (square)
+CELL_SIZE = 25  # pixels per grid cell (square)
 MEDIAN_FILTER_SIZE = 5
 TIME_RANGE = ((7, 0), (14, 20))  # UTC = 9 PM to 4:20 AM Hawaiian
 MIN_CENTROIDS_FOR_FIT = 5  # minimum valid centroids required to fit per-image zero_point
@@ -141,8 +141,8 @@ def _compute_cell_azel(
     X_test["El"] = el_flat
     x_px, y_px = model.predict(X_test)
 
-    n_rows = h // GRID_SIZE
-    n_cols = w // GRID_SIZE
+    n_rows = h // CELL_SIZE
+    n_cols = w // CELL_SIZE
 
     # Accumulators for circular mean of Az (sin/cos components) and arithmetic mean of El
     sin_az = np.zeros((n_rows, n_cols))
@@ -152,10 +152,10 @@ def _compute_cell_azel(
 
     for k in range(len(x_px)):
         xk, yk = x_px[k], y_px[k]
-        if not (0 <= xk < w and 0 <= yk < h):
+        if not (0 <= xk < n_cols * CELL_SIZE and 0 <= yk < n_rows * CELL_SIZE):
             continue
-        r = int(yk) // GRID_SIZE
-        c = int(xk) // GRID_SIZE
+        r = int(yk) // CELL_SIZE
+        c = int(xk) // CELL_SIZE
         az_rad = np.radians(az_flat[k])
         sin_az[r, c] += np.sin(az_rad)
         cos_az[r, c] += np.cos(az_rad)
@@ -197,7 +197,7 @@ def _measure_grid_medians(
     ground_mask: np.ndarray,
 ) -> np.ndarray:
     """
-    Measure median pixel brightness in each GRID_SIZE x GRID_SIZE pixel cell.
+    Measure median pixel brightness in each CELL_SIZE x CELL_SIZE pixel cell.
 
     Cells with fewer than 50% sky pixels (not masked by ground) are skipped (NaN).
 
@@ -205,16 +205,16 @@ def _measure_grid_medians(
         (n_rows, n_cols) array of median pixel values, NaN for invalid cells.
     """
     h, w = img_filtered.shape[:2]
-    n_rows = h // GRID_SIZE
-    n_cols = w // GRID_SIZE
+    n_rows = h // CELL_SIZE
+    n_cols = w // CELL_SIZE
     cell_medians = np.full((n_rows, n_cols), np.nan)
 
-    min_sky_pixels = 0.5 * GRID_SIZE * GRID_SIZE
+    min_sky_pixels = 0.5 * CELL_SIZE * CELL_SIZE
 
     for r in range(n_rows):
         for c in range(n_cols):
-            y0, y1 = r * GRID_SIZE, (r + 1) * GRID_SIZE
-            x0, x1 = c * GRID_SIZE, (c + 1) * GRID_SIZE
+            y0, y1 = r * CELL_SIZE, (r + 1) * CELL_SIZE
+            x0, x1 = c * CELL_SIZE, (c + 1) * CELL_SIZE
             sky_mask = ~ground_mask[y0:y1, x0:x1]
             if sky_mask.sum() < min_sky_pixels:
                 continue
@@ -242,6 +242,125 @@ def _parse_timestamp(filename: str) -> datetime:
     date_str = filename.split("UTC")[0][-8:]
     date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}"
     return datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M:%S")
+
+
+def measure_image_background(
+    hdul,
+    direction: str,
+    timestamp: datetime,
+    *,
+    model: FisheyeCorrectionModel | None = None,
+    brightness_cal: dict | None = None,
+    ground_mask: np.ndarray | None = None,
+    cell_az: np.ndarray | None = None,
+    cell_el: np.ndarray | None = None,
+    slist: StarList | None = None,
+    skip_median_filter: bool = False,
+) -> tuple[list[dict], dict | None]:
+    """
+    Measure sky background brightness for a single image end-to-end.
+
+    Pre-computed objects (model, brightness_cal, ground_mask, cell_az, cell_el, slist)
+    can be passed in to avoid redundant work when processing many images. Any that are
+    None will be computed on demand.
+
+    Args:
+        hdul: Open FITS HDUList for the image.
+        direction: Camera direction (North, East, South, West).
+        timestamp: UTC timestamp of the image (used to filter the star catalog).
+        model: Fisheye correction model. Loaded from disk if None.
+        brightness_cal: Brightness calibration dict. Loaded from disk if None.
+        ground_mask: Boolean ground mask (True = ground). Built if None.
+        cell_az: Per-cell azimuth array. Computed if None (requires model).
+        cell_el: Per-cell elevation array. Computed if None (requires model).
+        slist: StarList instance. Created if None.
+        skip_median_filter: If True, skip the median filter step.
+
+    Returns:
+        cell_rows: List of dicts with keys (source, az, el, vmag_per_pixel), one per
+            valid grid cell. Empty if the image had too few valid centroids.
+        image_row: Dict with keys (zero_point, centroid_rate), or None if the image
+            had too few valid centroids to fit a zero_point.
+    """
+    if model is None:
+        model = FisheyeCorrectionModel(direction=direction)
+    if brightness_cal is None:
+        brightness_cal = load_brightness_calibration(direction)
+    if slist is None:
+        slist = StarList()
+
+    h, w = hdul[0].data.shape[1], hdul[0].data.shape[2]
+
+    if ground_mask is None:
+        ground_mask = _build_ground_mask(direction, h, w)
+    if cell_az is None or cell_el is None:
+        cell_az, cell_el = _compute_cell_azel(direction, model, h, w)
+
+    az_range, el_range = SkyImage.get_azel_range(direction)
+
+    catalog = slist.filter_catalog(timestamp, az_range, el_range)
+    x_pred, y_pred = model.predict(catalog[["Az", "El"]])
+    catalog["x_transform"] = x_pred
+    catalog["y_transform"] = y_pred
+
+    cx, cy, _, _, brightness = centroid_starlist(hdul, catalog, measure_brightness=True)
+    gain = float(hdul[0].header["GAIN"])
+    exp_time = float(hdul[0].header["EXP_TIME"])
+
+    image_brightness_rows = []
+    n_valid_centroids = 0
+    for i in range(len(catalog)):
+        if cx[i] is not None and cy[i] is not None:
+            n_valid_centroids += 1
+            adjusted = (
+                brightness[i]
+                - (gain * brightness_cal["gain_coef"]
+                   + exp_time * brightness_cal["exp_time_coef"]
+                   + brightness_cal["intercept"])
+                + brightness_cal["mean_brightness"]
+            )
+            if not (adjusted >= 0):
+                continue
+            vmag = catalog["vmag"][i]
+            if not (3.0 < vmag < 7.0):
+                continue
+            image_brightness_rows.append({"adjusted_brightness": adjusted, "vmag": vmag})
+
+    n_catalog = len(catalog)
+    centroid_rate = n_valid_centroids / n_catalog if n_catalog > 0 else 0.0
+
+    if len(image_brightness_rows) < MIN_CENTROIDS_FOR_FIT:
+        return [], None
+
+    try:
+        img_df = pd.DataFrame(image_brightness_rows)
+        regression = fit_vmag_regression(img_df)
+    except ValueError:
+        return [], None
+
+    zero_point = regression["vmag_intercept"]
+
+    img = np.flip(np.transpose(hdul[0].data, (1, 2, 0)), axis=1)
+    img_filtered = _apply_median_filter(img, ground_mask, skip=skip_median_filter)
+    cell_medians = _measure_grid_medians(img_filtered, ground_mask)
+
+    cell_rows = []
+    n_rows_grid, n_cols_grid = cell_medians.shape
+    for r in range(n_rows_grid):
+        for c in range(n_cols_grid):
+            if np.isnan(cell_medians[r, c]) or cell_medians[r, c] <= 0:
+                continue
+            if np.isnan(cell_az[r, c]) or np.isnan(cell_el[r, c]):
+                continue
+            vmag_per_pixel = -2.5 * np.log10(cell_medians[r, c]) + zero_point
+            cell_rows.append({
+                "az": cell_az[r, c],
+                "el": cell_el[r, c],
+                "vmag_per_pixel": vmag_per_pixel,
+            })
+
+    image_row = {"zero_point": zero_point, "centroid_rate": centroid_rate}
+    return cell_rows, image_row
 
 
 def measure_background(direction: str, date: str, data_source: str = "local", skip_median_filter: bool = False):
@@ -301,7 +420,6 @@ def measure_background(direction: str, date: str, data_source: str = "local", sk
     cell_az, cell_el = _compute_cell_azel(direction, model, h, w)
     print(f"Az/El lookup complete. Grid: {cell_az.shape[0]}x{cell_az.shape[1]} cells")
 
-    az_range, el_range = SkyImage.get_azel_range(direction)
     slist = StarList()
 
     cell_rows = []   # source, az, el, vmag_per_pixel
@@ -314,84 +432,23 @@ def measure_background(direction: str, date: str, data_source: str = "local", sk
             ctx = SkyImage.open(directory / filename)
 
         with ctx as hdul:
-            # --- Star brightness measurement ---
-            catalog = slist.filter_catalog(timestamp, az_range, el_range)
-            x_pred, y_pred = model.predict(catalog[["Az", "El"]])
-            catalog["x_transform"] = x_pred
-            catalog["y_transform"] = y_pred
-
-            cx, cy, _, _, brightness = centroid_starlist(
-                hdul, catalog, measure_brightness=True
+            img_cell_rows, image_row = measure_image_background(
+                hdul, direction, timestamp,
+                model=model,
+                brightness_cal=brightness_cal,
+                ground_mask=ground_mask,
+                cell_az=cell_az,
+                cell_el=cell_el,
+                slist=slist,
+                skip_median_filter=skip_median_filter,
             )
-            gain = float(hdul[0].header["GAIN"])
-            exp_time = float(hdul[0].header["EXP_TIME"])
 
-            # Compute adjusted brightness for each successfully centroided star
-            image_brightness_rows = []
-            n_valid_centroids = 0
-            for i in range(len(catalog)):
-                if cx[i] is not None and cy[i] is not None:
-                    n_valid_centroids += 1
-                    adjusted = (
-                        brightness[i]
-                        - (gain * brightness_cal["gain_coef"]
-                           + exp_time * brightness_cal["exp_time_coef"]
-                           + brightness_cal["intercept"])
-                        + brightness_cal["mean_brightness"]
-                    )
-                    if not (adjusted >= 0):
-                        continue
-                    vmag = catalog["vmag"][i]
-                    if not (3.0 < vmag < 7.0):
-                        continue
-                    image_brightness_rows.append({
-                        "adjusted_brightness": adjusted,
-                        "vmag": vmag,
-                    })
-
-            # --- Background measurement ---
-            img = np.flip(np.transpose(hdul[0].data, (1, 2, 0)), axis=1)
-
-        # Fit per-image zero_point; skip image if too few valid centroids
-        n_catalog = len(catalog)
-        centroid_rate = n_valid_centroids / n_catalog if n_catalog > 0 else 0.0
-
-        if len(image_brightness_rows) < MIN_CENTROIDS_FOR_FIT:
+        if image_row is None:
             continue
 
-        try:
-            img_df = pd.DataFrame(image_brightness_rows)
-            regression = fit_vmag_regression(img_df)
-        except ValueError:
-            continue
-
-        zero_point = regression["vmag_intercept"]
-
-        # Apply median filter and measure grid
-        img_filtered = _apply_median_filter(img, ground_mask, skip=skip_median_filter)
-        cell_medians = _measure_grid_medians(img_filtered, ground_mask)
-
-        # Convert each valid cell to vmag_per_pixel and emit a row
-        n_rows_grid, n_cols_grid = cell_medians.shape
-        for r in range(n_rows_grid):
-            for c in range(n_cols_grid):
-                if np.isnan(cell_medians[r, c]) or cell_medians[r, c] <= 0:
-                    continue
-                if np.isnan(cell_az[r, c]) or np.isnan(cell_el[r, c]):
-                    continue
-                vmag_per_pixel = -2.5 * np.log10(cell_medians[r, c]) + zero_point
-                cell_rows.append({
-                    "source": filename,
-                    "az": cell_az[r, c],
-                    "el": cell_el[r, c],
-                    "vmag_per_pixel": vmag_per_pixel,
-                })
-
-        image_rows.append({
-            "source": filename,
-            "zero_point": zero_point,
-            "centroid_rate": centroid_rate,
-        })
+        for row in img_cell_rows:
+            cell_rows.append({"source": filename, **row})
+        image_rows.append({"source": filename, **image_row})
 
     if not image_rows:
         print("No images had enough valid centroids to fit a zero_point.")
