@@ -6,11 +6,11 @@ For each image:
   2. Centroid to get exact positions and measure star brightness
   3. Fit per-image zero_point: vmag = -2.5 * log10(adjusted_brightness) + zero_point
   4. Apply median filter to the sky region (ground masked out)
-  5. Measure median pixel brightness per 25x25 pixel grid cell
-  6. Convert to vmag_per_pixel using this image's zero_point
+  5. Measure median pixel brightness per Az/El grid cell
+  6. Convert to vmag_per_pixel and vmag_per_arcsec2 using this image's zero_point
 
 Outputs:
-  {direction}_{date}_cells.csv  — source, az, el, vmag_per_pixel (one row per cell per image)
+  {direction}_{date}_cells.csv  — source, az, el, vmag_per_pixel, vmag_per_arcsec2 (one row per cell per image)
   {direction}_{date}_images.csv — source, zero_point, centroid_rate
 """
 
@@ -69,7 +69,9 @@ GROUND_MASK_POLYGONS = {
     ],
 }
 
-CELL_SIZE = 25  # pixels per grid cell (square)
+AZEL_GRID_NX = 80   # azimuth grid points
+AZEL_GRID_NY = 80   # elevation grid points
+MIN_SKY_PCT = 0.5   # min fraction of quad pixels that must be sky
 MEDIAN_FILTER_SIZE = 5
 TIME_RANGE = ((7, 0), (14, 20))  # UTC = 9 PM to 4:20 AM Hawaiian
 MIN_CENTROIDS_FOR_FIT = 5  # minimum valid centroids required to fit per-image zero_point
@@ -98,38 +100,82 @@ def _build_ground_mask(direction: str, h: int, w: int) -> np.ndarray:
     return ground_mask
 
 
-def _compute_cell_azel(
+def _compute_azel_grid(
     direction: str,
     model: FisheyeCorrectionModel,
-    h: int,
-    w: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Compute Az/El for the center of each pixel grid cell using the inverse model.
+    Build an Az/El grid and project it to pixel space via the forward model.
 
-    Maps each cell center pixel coordinate directly to Az/El via predict_inverse.
+    Defines AZEL_GRID_NY x AZEL_GRID_NX grid points in Az/El space, projects
+    them to pixel coordinates, and computes cell-center Az/El as the mean of
+    each quad's four corners.
 
     Returns:
-        cell_az: (n_rows, n_cols) array of azimuth values in degrees
-        cell_el: (n_rows, n_cols) array of elevation values in degrees
+        X_px:    (AZEL_GRID_NY, AZEL_GRID_NX) projected pixel x-coordinates
+        Y_px:    (AZEL_GRID_NY, AZEL_GRID_NX) projected pixel y-coordinates
+        cell_az: (AZEL_GRID_NY-1, AZEL_GRID_NX-1) cell-center azimuths (degrees)
+        cell_el: (AZEL_GRID_NY-1, AZEL_GRID_NX-1) cell-center elevations (degrees)
     """
-    n_rows = h // CELL_SIZE
-    n_cols = w // CELL_SIZE
+    az_range, el_range = SkyImage.get_azel_range(direction)
+    az_vals = np.linspace(az_range[0], az_range[1], AZEL_GRID_NX)
+    el_vals = np.linspace(el_range[0], el_range[1], AZEL_GRID_NY)
 
-    col_grid, row_grid = np.meshgrid(np.arange(n_cols), np.arange(n_rows))
-    x_centers = (col_grid * CELL_SIZE + CELL_SIZE // 2).ravel().astype(float)
-    y_centers = (row_grid * CELL_SIZE + CELL_SIZE // 2).ravel().astype(float)
+    az_grid, el_grid = np.meshgrid(az_vals, el_vals)  # both (NY, NX)
 
-    X_test = Table()
-    X_test["x_actual"] = x_centers
-    X_test["y_actual"] = y_centers
+    t = Table()
+    t["Az"] = az_grid.ravel()
+    t["El"] = el_grid.ravel()
 
-    az_flat, el_flat = model.predict_inverse(X_test)
+    x_flat, y_flat = model.predict(t)
+    X_px = x_flat.reshape(AZEL_GRID_NY, AZEL_GRID_NX)
+    Y_px = y_flat.reshape(AZEL_GRID_NY, AZEL_GRID_NX)
 
-    cell_az = az_flat.reshape(n_rows, n_cols) % 360
-    cell_el = el_flat.reshape(n_rows, n_cols)
+    # Cell centers: mean of 4 corner az/el values for each quad
+    cell_az = 0.25 * (
+        az_grid[:-1, :-1] + az_grid[:-1, 1:] +
+        az_grid[1:, :-1] + az_grid[1:, 1:]
+    ) % 360
+    cell_el = 0.25 * (
+        el_grid[:-1, :-1] + el_grid[:-1, 1:] +
+        el_grid[1:, :-1] + el_grid[1:, 1:]
+    )
 
-    return cell_az, cell_el
+    return X_px, Y_px, cell_az, cell_el
+
+
+def _compute_arcsec2_per_pixel(
+    X_px: np.ndarray,
+    Y_px: np.ndarray,
+    cell_el: np.ndarray,
+    az_range: tuple,
+    el_range: tuple,
+) -> np.ndarray:
+    """
+    Compute the angular area (arcsec²) per pixel for each Az/El grid cell.
+
+    Args:
+        X_px:     (AZEL_GRID_NY, AZEL_GRID_NX) pixel x-coordinates of grid vertices
+        Y_px:     (AZEL_GRID_NY, AZEL_GRID_NX) pixel y-coordinates of grid vertices
+        cell_el:  (AZEL_GRID_NY-1, AZEL_GRID_NX-1) cell-center elevations (degrees)
+        az_range: (az_min, az_max) in degrees
+        el_range: (el_min, el_max) in degrees
+
+    Returns:
+        (AZEL_GRID_NY-1, AZEL_GRID_NX-1) array of arcsec²/pixel values
+    """
+    delta_az_arcsec = (az_range[1] - az_range[0]) / (AZEL_GRID_NX - 1) * 3600
+    delta_el_arcsec = (el_range[1] - el_range[0]) / (AZEL_GRID_NY - 1) * 3600
+    angular_area = delta_az_arcsec * delta_el_arcsec * np.cos(np.radians(cell_el))
+
+    x0, y0 = X_px[:-1, :-1], Y_px[:-1, :-1]
+    x1, y1 = X_px[:-1, 1:],  Y_px[:-1, 1:]
+    x2, y2 = X_px[1:,  1:],  Y_px[1:,  1:]
+    x3, y3 = X_px[1:,  :-1], Y_px[1:,  :-1]
+    pixel_area = 0.5 * np.abs(
+        x0*(y1-y3) + x1*(y2-y0) + x2*(y3-y1) + x3*(y0-y2)
+    )
+    return angular_area / pixel_area
 
 
 def _apply_median_filter(img: np.ndarray, ground_mask: np.ndarray, skip: bool = False) -> np.ndarray:
@@ -153,34 +199,63 @@ def _apply_median_filter(img: np.ndarray, ground_mask: np.ndarray, skip: bool = 
     return result
 
 
-def _measure_grid_medians(
+def _measure_azel_grid_medians(
     img_filtered: np.ndarray,
     ground_mask: np.ndarray,
+    X_px: np.ndarray,
+    Y_px: np.ndarray,
 ) -> np.ndarray:
     """
-    Measure median pixel brightness in each CELL_SIZE x CELL_SIZE pixel cell.
+    Measure median pixel brightness in each Az/El quad cell.
 
-    Cells with fewer than 50% sky pixels (not masked by ground) are skipped (NaN).
+    Each cell is defined by the projected pixel coordinates of its four corners.
+    Cells where fewer than MIN_SKY_PCT of the contained pixels are sky are skipped (NaN).
+
+    Args:
+        img_filtered: (H, W) filtered image array
+        ground_mask:  (H, W) boolean mask, True = ground
+        X_px:         (AZEL_GRID_NY, AZEL_GRID_NX) pixel x-coordinates of grid vertices
+        Y_px:         (AZEL_GRID_NY, AZEL_GRID_NX) pixel y-coordinates of grid vertices
 
     Returns:
-        (n_rows, n_cols) array of median pixel values, NaN for invalid cells.
+        (AZEL_GRID_NY-1, AZEL_GRID_NX-1) array of median pixel values, NaN for invalid cells.
     """
     h, w = img_filtered.shape[:2]
-    n_rows = h // CELL_SIZE
-    n_cols = w // CELL_SIZE
+    n_rows, n_cols = X_px.shape[0] - 1, X_px.shape[1] - 1
     cell_medians = np.full((n_rows, n_cols), np.nan)
 
-    min_sky_pixels = 0.5 * CELL_SIZE * CELL_SIZE
+    for i in range(n_rows):
+        for j in range(n_cols):
+            quad_x = [X_px[i, j], X_px[i, j+1], X_px[i+1, j+1], X_px[i+1, j]]
+            quad_y = [Y_px[i, j], Y_px[i, j+1], Y_px[i+1, j+1], Y_px[i+1, j]]
+            quad = list(zip(quad_x, quad_y))
 
-    for r in range(n_rows):
-        for c in range(n_cols):
-            y0, y1 = r * CELL_SIZE, (r + 1) * CELL_SIZE
-            x0, x1 = c * CELL_SIZE, (c + 1) * CELL_SIZE
-            sky_mask = ~ground_mask[y0:y1, x0:x1]
-            if sky_mask.sum() < min_sky_pixels:
+            # Bounding box to limit point-in-polygon test
+            x_min = max(0, int(np.floor(min(quad_x))))
+            x_max = min(w - 1, int(np.ceil(max(quad_x))))
+            y_min = max(0, int(np.floor(min(quad_y))))
+            y_max = min(h - 1, int(np.ceil(max(quad_y))))
+
+            if x_min >= x_max or y_min >= y_max:
                 continue
-            pixels = img_filtered[y0:y1, x0:x1][sky_mask]
-            cell_medians[r, c] = np.median(pixels)
+
+            box_yy, box_xx = np.mgrid[y_min:y_max+1, x_min:x_max+1]
+            box_coords = np.column_stack([box_xx.ravel(), box_yy.ravel()])
+
+            in_quad = MplPath(quad).contains_points(box_coords)
+            if not in_quad.any():
+                continue
+
+            n_in_quad = in_quad.sum()
+            box_ys = box_yy.ravel()[in_quad]
+            box_xs = box_xx.ravel()[in_quad]
+            sky = ~ground_mask[box_ys, box_xs]
+
+            if sky.sum() / n_in_quad < MIN_SKY_PCT:
+                continue
+
+            pixels = img_filtered[box_ys[sky], box_xs[sky]]
+            cell_medians[i, j] = np.median(pixels)
 
     return cell_medians
 
@@ -215,15 +290,18 @@ def measure_image_background(
     ground_mask: np.ndarray | None = None,
     cell_az: np.ndarray | None = None,
     cell_el: np.ndarray | None = None,
+    X_px: np.ndarray | None = None,
+    Y_px: np.ndarray | None = None,
+    arcsec2_per_pixel: np.ndarray | None = None,
     slist: StarList | None = None,
     skip_median_filter: bool = False,
 ) -> tuple[list[dict], dict | None]:
     """
     Measure sky background brightness for a single image end-to-end.
 
-    Pre-computed objects (model, brightness_cal, ground_mask, cell_az, cell_el, slist)
-    can be passed in to avoid redundant work when processing many images. Any that are
-    None will be computed on demand.
+    Pre-computed objects (model, brightness_cal, ground_mask, cell_az, cell_el,
+    X_px, Y_px, slist) can be passed in to avoid redundant work when processing
+    many images. Any that are None will be computed on demand.
 
     Args:
         hdul: Open FITS HDUList for the image.
@@ -234,12 +312,15 @@ def measure_image_background(
         ground_mask: Boolean ground mask (True = ground). Built if None.
         cell_az: Per-cell azimuth array. Computed if None (requires model).
         cell_el: Per-cell elevation array. Computed if None (requires model).
+        X_px: Grid vertex pixel x-coordinates. Computed if None (requires model).
+        Y_px: Grid vertex pixel y-coordinates. Computed if None (requires model).
+        arcsec2_per_pixel: Angular area per pixel for each cell. Computed if None.
         slist: StarList instance. Created if None.
         skip_median_filter: If True, skip the median filter step.
 
     Returns:
-        cell_rows: List of dicts with keys (source, az, el, vmag_per_pixel), one per
-            valid grid cell. Empty if the image had too few valid centroids.
+        cell_rows: List of dicts with keys (source, az, el, vmag_per_pixel, vmag_per_arcsec2),
+            one per valid grid cell. Empty if the image had too few valid centroids.
         image_row: Dict with keys (zero_point, centroid_rate), or None if the image
             had too few valid centroids to fit a zero_point.
     """
@@ -254,10 +335,13 @@ def measure_image_background(
 
     if ground_mask is None:
         ground_mask = _build_ground_mask(direction, h, w)
-    if cell_az is None or cell_el is None:
-        cell_az, cell_el = _compute_cell_azel(direction, model, h, w)
+    if cell_az is None or cell_el is None or X_px is None or Y_px is None:
+        X_px, Y_px, cell_az, cell_el = _compute_azel_grid(direction, model)
 
     az_range, el_range = SkyImage.get_azel_range(direction)
+
+    if arcsec2_per_pixel is None:
+        arcsec2_per_pixel = _compute_arcsec2_per_pixel(X_px, Y_px, cell_el, az_range, el_range)
 
     catalog = slist.filter_catalog(timestamp, az_range, el_range)
     x_pred, y_pred = model.predict(catalog[["Az", "El"]])
@@ -303,7 +387,7 @@ def measure_image_background(
 
     img = np.flip(np.transpose(hdul[0].data, (1, 2, 0)), axis=1)
     img_filtered = _apply_median_filter(img, ground_mask, skip=skip_median_filter)
-    cell_medians = _measure_grid_medians(img_filtered, ground_mask)
+    cell_medians = _measure_azel_grid_medians(img_filtered, ground_mask, X_px, Y_px)
 
     cell_rows = []
     n_rows_grid, n_cols_grid = cell_medians.shape
@@ -314,10 +398,12 @@ def measure_image_background(
             if np.isnan(cell_az[r, c]) or np.isnan(cell_el[r, c]):
                 continue
             vmag_per_pixel = -2.5 * np.log10(cell_medians[r, c]) + zero_point
+            vmag_per_arcsec2 = vmag_per_pixel + 2.5 * np.log10(arcsec2_per_pixel[r, c])
             cell_rows.append({
                 "az": cell_az[r, c],
                 "el": cell_el[r, c],
                 "vmag_per_pixel": vmag_per_pixel,
+                "vmag_per_arcsec2": vmag_per_arcsec2,
             })
 
     image_row = {"zero_point": zero_point, "centroid_rate": centroid_rate}
@@ -376,10 +462,12 @@ def measure_background(direction: str, date: str, data_source: str = "local", sk
     with ctx as hdul:
         h, w = hdul[0].data.shape[1], hdul[0].data.shape[2]
 
-    print(f"Image size: {h}x{w}, building ground mask and Az/El cell lookup...")
+    print(f"Image size: {h}x{w}, building ground mask and Az/El grid...")
     ground_mask = _build_ground_mask(direction, h, w)
-    cell_az, cell_el = _compute_cell_azel(direction, model, h, w)
-    print(f"Az/El lookup complete. Grid: {cell_az.shape[0]}x{cell_az.shape[1]} cells")
+    X_px, Y_px, cell_az, cell_el = _compute_azel_grid(direction, model)
+    az_range, el_range = SkyImage.get_azel_range(direction)
+    arcsec2_per_pixel = _compute_arcsec2_per_pixel(X_px, Y_px, cell_el, az_range, el_range)
+    print(f"Az/El grid complete. Grid: {cell_az.shape[0]}x{cell_az.shape[1]} cells")
 
     slist = StarList()
 
@@ -400,6 +488,9 @@ def measure_background(direction: str, date: str, data_source: str = "local", sk
                 ground_mask=ground_mask,
                 cell_az=cell_az,
                 cell_el=cell_el,
+                X_px=X_px,
+                Y_px=Y_px,
+                arcsec2_per_pixel=arcsec2_per_pixel,
                 slist=slist,
                 skip_median_filter=skip_median_filter,
             )

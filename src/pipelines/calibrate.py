@@ -1,8 +1,8 @@
 """
-Calibrate the fisheye distortion correction model (AzEl -> xy and xy -> AzEl transformation matrices).
+Calibrate the fisheye distortion correction model (AzEl -> xy transformation matrix).
 
 Loads calibration points (Manual, Centroid, or Both), trains a FisheyeCorrectionModel,
-and saves the Distort and Distort_inv matrices.
+and saves the Distort matrix.
 
 Usage:
     python calibrate.py --direction South --point-source Centroid
@@ -65,7 +65,7 @@ def calibrate_direction(
     """
     Calibrate the fisheye model for a single direction.
 
-    Loads calibration points and trains the forward and inverse distortion models.
+    Loads calibration points and trains the distortion model.
 
     Args:
         direction: Camera direction
@@ -83,7 +83,6 @@ def calibrate_direction(
     X_train, Y_train = load_points(config.point_source, direction, start_date_param)
     model = FisheyeCorrectionModel(model_type=config.model_type)
     model.train(X_train, Y_train)
-    model.train_inverse(Y_train, X_train)
 
     date_info = "all dates" if config.start_date == "all" else config.start_date
     print(f"Loaded {len(X_train)} {config.point_source} points from {date_info}")
@@ -114,29 +113,6 @@ def save_distort_matrix(
     return output_path
 
 
-def save_distort_inv_matrix(
-    model: FisheyeCorrectionModel,
-    direction: str,
-    output_dir: Path,
-) -> Path:
-    """
-    Save the inverse Distort matrix to a numpy file.
-
-    Args:
-        model: Trained model with Distort_inv matrix
-        direction: Camera direction
-        output_dir: Output directory
-
-    Returns:
-        Path to saved file
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{direction.lower()}_distort_inv.npy"
-    np.save(output_path, model.Distort_inv)
-    print(f"Saved Distort_inv matrix to: {output_path}")
-    return output_path
-
-
 def run_calibration(config: CalibrationConfig) -> dict:
     """
     Run the complete calibration pipeline.
@@ -160,7 +136,6 @@ def run_calibration(config: CalibrationConfig) -> dict:
         models[direction] = model
 
         save_distort_matrix(model, direction, config.output_dir)
-        save_distort_inv_matrix(model, direction, config.output_dir)
 
     print(f"\n{'='*60}")
     print("Calibration complete!")
