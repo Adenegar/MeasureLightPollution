@@ -38,7 +38,6 @@ class FisheyeCorrectionModel:
         self.model_type = model_type
         self.direction = direction
         self.Distort = None
-        self.Distort_inv = None
 
         if direction is not None:
             self._load_distort(direction)
@@ -60,10 +59,6 @@ class FisheyeCorrectionModel:
                 f"Run calibrate.py for {direction} first."
             )
         self.Distort = np.load(distort_path)
-
-        inv_path = PROJECT_ROOT / "data" / "Calibration" / f"{direction.lower()}_distort_inv.npy"
-        if inv_path.exists():
-            self.Distort_inv = np.load(inv_path)
 
     def train(self, X_train: Table, Y_train: Table) -> None:
         """
@@ -110,98 +105,6 @@ class FisheyeCorrectionModel:
         y_corrected = predictions[:, 1]
 
         return x_corrected, y_corrected
-
-    def train_inverse(self, X_train: Table, Y_train: Table) -> None:
-        """
-        Train the inverse model: pixel coordinates -> Az/El.
-
-        Args:
-            X_train: Table with x_actual and y_actual columns (pixel coordinates)
-            Y_train: Table with Az and El columns
-        """
-        X_train = self._generate_pixel_features(X_train.copy())
-        X = X_train.to_pandas().to_numpy()
-        Y = np.column_stack([Y_train["Az"], Y_train["El"]])
-        self.Distort_inv, residuals, rank, s = np.linalg.lstsq(X, Y, rcond=None)
-
-    def predict_inverse(self, X_test: Table) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Predict Az/El from pixel coordinates using the inverse model.
-
-        Args:
-            X_test: Table with x_actual and y_actual columns
-
-        Returns:
-            Tuple of (Az, El) arrays
-        """
-        if self.Distort_inv is None:
-            raise ValueError("Inverse model has not been trained yet. Call train_inverse() first.")
-
-        X_test = self._generate_pixel_features(X_test.copy())
-        X = X_test.to_pandas().to_numpy()
-        predictions = X @ self.Distort_inv
-        return predictions[:, 0], predictions[:, 1]
-
-    def _generate_pixel_features(self, data: Table) -> Table:
-        """
-        Generate trig-based features from pixel coordinates.
-
-        Uses polar decomposition in the image plane:
-        - phi = atan2(y, x): azimuth angle in the image plane
-        - rho = atan(r): bounded radial angle from the optical axis
-
-        Features mirror the forward model: sinPhi, cosPhi, sinRho, cosRho
-        and their 2nd/3rd degree cross terms (33 features + intercept).
-        """
-        x = data["x_actual"]
-        y = data["y_actual"]
-        r = np.sqrt(x**2 + y**2)
-
-        phi = np.arctan2(y, x)
-        rho = np.arctan(r)
-
-        # 1st degree
-        data["sinPhi"] = np.sin(phi)
-        data["cosPhi"] = np.cos(phi)
-        data["sinRho"] = np.sin(rho)
-        data["cosRho"] = np.cos(rho)
-
-        # 2nd degree cross terms (mirrors forward model structure)
-        data["sinPhi_sinPhi"] = data["sinPhi"] * data["sinPhi"]
-        data["sinPhi_sinRho"] = data["sinPhi"] * data["sinRho"]
-        data["sinRho_sinRho"] = data["sinRho"] * data["sinRho"]
-        data["cosPhi_cosPhi"] = data["cosPhi"] * data["cosPhi"]
-        data["cosPhi_cosRho"] = data["cosPhi"] * data["cosRho"]
-        data["cosRho_cosRho"] = data["cosRho"] * data["cosRho"]
-        data["sinPhi_cosRho"] = data["sinPhi"] * data["cosRho"]
-        data["cosPhi_sinRho"] = data["cosPhi"] * data["sinRho"]
-
-        # 3rd degree cross terms (mirrors forward model structure)
-        data["sinPhi_sinPhi_sinPhi"] = data["sinPhi"] * data["sinPhi"] * data["sinPhi"]
-        data["sinPhi_sinPhi_sinRho"] = data["sinPhi"] * data["sinPhi"] * data["sinRho"]
-        data["sinPhi_sinPhi_cosPhi"] = data["sinPhi"] * data["sinPhi"] * data["cosPhi"]
-        data["sinPhi_sinPhi_cosRho"] = data["sinPhi"] * data["sinPhi"] * data["cosRho"]
-        data["sinPhi_sinRho_sinRho"] = data["sinPhi"] * data["sinRho"] * data["sinRho"]
-        data["sinPhi_sinRho_cosPhi"] = data["sinPhi"] * data["sinRho"] * data["cosPhi"]
-        data["sinPhi_sinRho_cosRho"] = data["sinPhi"] * data["sinRho"] * data["cosRho"]
-        data["sinPhi_cosPhi_cosPhi"] = data["sinPhi"] * data["cosPhi"] * data["cosPhi"]
-        data["sinPhi_cosPhi_cosRho"] = data["sinPhi"] * data["cosPhi"] * data["cosRho"]
-        data["sinPhi_cosRho_cosRho"] = data["sinPhi"] * data["cosRho"] * data["cosRho"]
-        data["sinRho_sinRho_sinRho"] = data["sinRho"] * data["sinRho"] * data["sinRho"]
-        data["sinRho_sinRho_cosPhi"] = data["sinRho"] * data["sinRho"] * data["cosPhi"]
-        data["sinRho_sinRho_cosRho"] = data["sinRho"] * data["sinRho"] * data["cosRho"]
-        data["sinRho_cosPhi_cosPhi"] = data["sinRho"] * data["cosPhi"] * data["cosPhi"]
-        data["sinRho_cosPhi_cosRho"] = data["sinRho"] * data["cosPhi"] * data["cosRho"]
-        data["sinRho_cosRho_cosRho"] = data["sinRho"] * data["cosRho"] * data["cosRho"]
-        data["cosPhi_cosPhi_cosPhi"] = data["cosPhi"] * data["cosPhi"] * data["cosPhi"]
-        data["cosPhi_cosPhi_cosRho"] = data["cosPhi"] * data["cosPhi"] * data["cosRho"]
-        data["cosPhi_cosRho_cosRho"] = data["cosPhi"] * data["cosRho"] * data["cosRho"]
-        data["cosRho_cosRho_cosRho"] = data["cosRho"] * data["cosRho"] * data["cosRho"]
-
-        # Intercept term
-        data["shift"] = 1
-
-        return data
 
     def _generate_features_simple(self, data: Table) -> Table:
         """
