@@ -31,7 +31,7 @@ skycam data
 vm-internship2:/skycams1
 vm-internship2:/skycams2
 
-TODO: Instructions for how to use
+## Usage
 
 ```zsh
 python src/pipelines/calibrate.py --direction West --calibrate-date 20260118 --data-source local            
@@ -49,11 +49,3 @@ python calibrate.py --direction East --calibrate-date 20260109 --data-source loc
 python images_to_brightness.py --direction East --date 20260109 --data-source local
 
 python -m src.pipelines.calibrate --direction East --calibrate-date 20260109 --data-source local 
-
-TODO:
-- [ ] fix pixel - vmag label
-- Measurement, not residual
-
-TODO: 
-- [ ] Save data for each image
-- [ ] Save data for each star

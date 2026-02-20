@@ -1,7 +1,6 @@
 from astropy.table import Table, vstack
 from typing import Literal, Optional, Tuple
 from config.settings import PROJECT_ROOT
-import json
 from pathlib import Path
 
 

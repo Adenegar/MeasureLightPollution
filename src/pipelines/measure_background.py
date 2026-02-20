@@ -30,8 +30,7 @@ from data_management.sky_image import SkyImage
 from data_management.starlist import StarList
 from models.centroid import centroid_starlist
 from models.fisheye_correction import FisheyeCorrectionModel
-from pipelines.calibrate import load_brightness_calibration
-from pipelines.images_to_brightness import fit_vmag_regression
+from pipelines.extract_centroids import load_brightness_calibration, fit_vmag_regression
 
 DIRECTIONS = ["North", "East", "South", "West"]
 
@@ -106,67 +105,29 @@ def _compute_cell_azel(
     w: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Compute Az/El for the center of each pixel grid cell via inverse lookup.
+    Compute Az/El for the center of each pixel grid cell using the inverse model.
 
-    Projects a dense Az/El grid to pixel space, then for each grid cell accumulates
-    the Az/El of all projected points that fall within it and takes the circular mean
-    (for Az) and arithmetic mean (for El). Cells with no projected points are NaN.
+    Maps each cell center pixel coordinate directly to Az/El via predict_inverse.
 
     Returns:
         cell_az: (n_rows, n_cols) array of azimuth values in degrees
         cell_el: (n_rows, n_cols) array of elevation values in degrees
     """
-    az_range, el_range = SkyImage.get_azel_range(direction)
-    az_min, az_max = az_range
-    el_min, el_max = el_range
-
-    # Build dense Az/El grid (step 0.1 deg)
-    step = 0.1
-    if az_min < 0:
-        # Wrap-around case (e.g. North: -67 to 68 means 293..360 and 0..68)
-        az_values = np.concatenate([
-            np.arange(360 + az_min, 360, step),
-            np.arange(0, az_max, step),
-        ])
-    else:
-        az_values = np.arange(az_min, az_max, step)
-    el_values = np.arange(el_min, el_max, step)
-
-    Az_dense, El_dense = np.meshgrid(az_values, el_values)
-    az_flat = Az_dense.ravel()
-    el_flat = El_dense.ravel()
-
-    X_test = Table()
-    X_test["Az"] = az_flat
-    X_test["El"] = el_flat
-    x_px, y_px = model.predict(X_test)
-
     n_rows = h // CELL_SIZE
     n_cols = w // CELL_SIZE
 
-    # Accumulators for circular mean of Az (sin/cos components) and arithmetic mean of El
-    sin_az = np.zeros((n_rows, n_cols))
-    cos_az = np.zeros((n_rows, n_cols))
-    el_sum = np.zeros((n_rows, n_cols))
-    counts = np.zeros((n_rows, n_cols), dtype=np.int32)
+    col_grid, row_grid = np.meshgrid(np.arange(n_cols), np.arange(n_rows))
+    x_centers = (col_grid * CELL_SIZE + CELL_SIZE // 2).ravel().astype(float)
+    y_centers = (row_grid * CELL_SIZE + CELL_SIZE // 2).ravel().astype(float)
 
-    for k in range(len(x_px)):
-        xk, yk = x_px[k], y_px[k]
-        if not (0 <= xk < n_cols * CELL_SIZE and 0 <= yk < n_rows * CELL_SIZE):
-            continue
-        r = int(yk) // CELL_SIZE
-        c = int(xk) // CELL_SIZE
-        az_rad = np.radians(az_flat[k])
-        sin_az[r, c] += np.sin(az_rad)
-        cos_az[r, c] += np.cos(az_rad)
-        el_sum[r, c] += el_flat[k]
-        counts[r, c] += 1
+    X_test = Table()
+    X_test["x_actual"] = x_centers
+    X_test["y_actual"] = y_centers
 
-    valid = counts > 0
-    cell_az = np.full((n_rows, n_cols), np.nan)
-    cell_el = np.full((n_rows, n_cols), np.nan)
-    cell_az[valid] = np.degrees(np.arctan2(sin_az[valid], cos_az[valid])) % 360
-    cell_el[valid] = el_sum[valid] / counts[valid]
+    az_flat, el_flat = model.predict_inverse(X_test)
+
+    cell_az = az_flat.reshape(n_rows, n_cols) % 360
+    cell_el = el_flat.reshape(n_rows, n_cols)
 
     return cell_az, cell_el
 
