@@ -1,51 +1,73 @@
-## Setup development mode for module resolution
+# Monitoring Light Pollution
+
+This project provides tools to model camera distortion, model camera light sensitivity, and measure background brightness in the cloud camera fits files. 
+
+## Setup
+
+Install dependencies:
 
 ```zsh
 uv pip install -e .
 ```
 
-## Move Cloud Cam Images
-Rsync files from vm-internship2 to hqdevmacstudio01. Only sync files in the 07:00-14:20 UTC range.
+**Data:** Data sources are documented on Sharepoint
+
+## Pipelines
+
+The three scripts in `src/pipelines/` are run in order for each camera direction and date.
+
+### Step 1 — Calibrate the fisheye model
+
+Fits the distortion correction model (Az/El ↔ pixel coordinates) from calibration points.
 
 ```zsh
-rsync -av \
-    --include='CloudCam*UTC07*.fits' \
-    --include='CloudCam*UTC08*.fits' \
-    --include='CloudCam*UTC09*.fits' \
-    --include='CloudCam*UTC10*.fits' \
-    --include='CloudCam*UTC11*.fits' \
-    --include='CloudCam*UTC12*.fits' \
-    --include='CloudCam*UTC13*.fits' \
-    --include='CloudCam*UTC140*.fits' \
-    --include='CloudCam*UTC141*.fits' \
-    --include='CloudCam*UTC1420*.fits' \
-    --exclude='*' \
-    adenegar@vm-internship2:/skycams2/CloudCamWest/20260201/ \
-    /Users/adenegar/Projects/starMap/data/CloudCamWest/20260201/
+python src/pipelines/calibrate.py --direction West --start-date 20260118
 ```
 
-Catalog data location:
-vm-internship2:/data/skwok/catalogs
+| Flag | Description |
+|---|---|
+| `--direction` | `North`, `East`, `South`, `West`, or `all` |
+| `--point-source` | Calibration points to use: `Manual`, `Centroid`, or `Both` (default: `Both`) |
+| `--start-date` | Date of calibration points in `YYYYMMDD` format (default: all dates) |
+| `--model-type` | `simple` or `full` (default: `full`) |
 
-skycam data
-vm-internship2:/skycams1
-vm-internship2:/skycams2
+### Step 2 — Extract centroids and fit brightness calibration
 
-## Usage
+Validates the model against images for a specified night, centroids stars, and fits the brightness calibration used in Step 3.
 
 ```zsh
-python src/pipelines/calibrate.py --direction West --calibrate-date 20260118 --data-source local            
+python src/pipelines/extract_centroids.py --direction West --date 20260118 --update-cam-cal
 ```
+
+| Flag | Description |
+|---|---|
+| `--direction` | `North`, `East`, `South`, `West`, or `all` |
+| `--date` | Date of images in `YYYYMMDD` format |
+| `--update-cam-cal` | Fit and save the brightness calibration (required before Step 3) |
+| `--save-centroids` | Save centroid positions to `data/Calibration/{date}/` |
+| `--save-plot` | Save a brightness regression plot to `out/evals/figs/` |
+| `--data-source` | `local` or `api` (default: `local`) |
+
+### Step 3 — Measure sky background brightness
+
+For each nighttime image: centroids stars, fits a per-image photometric zero point, and measures median pixel brightness in a 25×25 pixel grid across the sky.
 
 ```zsh
-python src/pipelines/images_to_brightness.py --direction West --date 20260118 --data-source local 
+python src/pipelines/measure_background.py --direction West --date 20260118
 ```
 
+| Flag | Description |
+|---|---|
+| `--direction` | `North`, `East`, `South`, or `West` |
+| `--date` | Date of images in `YYYYMMDD` format |
+| `--median-filter` | Apply a median filter to the sky region before measuring |
+| `--data` | `local` or `api` (default: `local`) |
 
-calibration and images to brightness:
+## Outputs
 
-python calibrate.py --direction East --calibrate-date 20260109 --data-source local 
+`measure_background.py` writes two CSVs to `out/background/`:
 
-python images_to_brightness.py --direction East --date 20260109 --data-source local
-
-python -m src.pipelines.calibrate --direction East --calibrate-date 20260109 --data-source local 
+| File | Contents |
+|---|---|
+| `{direction}_{date}_cells.csv` | One row per grid cell per image: `source`, `az`, `el`, `vmag_per_pixel` |
+| `{direction}_{date}_images.csv` | One row per image: `source`, `zero_point`, `centroid_rate` |

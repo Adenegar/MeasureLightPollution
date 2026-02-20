@@ -82,8 +82,8 @@ def parse_args():
     parser.add_argument("--date", required=True, help="Date in YYYYMMDD format (e.g. 20260118)")
     parser.add_argument("--data", choices=["local", "api"], default="local",
                         help="Data source (default: local)")
-    parser.add_argument("--skip-median-filter", action="store_true",
-                        help="Skip the median filter step (use raw pixel values)")
+    parser.add_argument("--median-filter", action="store_true",
+                        help="Apply a median filter to the sky region before measuring")
     return parser.parse_args()
 
 
@@ -440,5 +440,5 @@ if __name__ == "__main__":
         direction=args.direction,
         date=args.date,
         data_source=args.data,
-        skip_median_filter=args.skip_median_filter,
+        skip_median_filter=not args.median_filter,
     )
