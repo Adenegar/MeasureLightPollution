@@ -10,7 +10,30 @@ Install dependencies:
 uv pip install -e .
 ```
 
+If you get an error for the incorrect version of Python:
+
+```zsh
+uv python install 3.13
+uv venv --python 3.13
+```
+then install
+
 **Data:** Data sources are documented on Sharepoint
+
+Put calibration data in:
+
+```zsh
+data/CloudCam{direction}/{date}
+```
+
+Put starlists in 
+
+```zsh
+data/StarLists
+```
+
+
+
 
 ## Pipelines
 
@@ -36,7 +59,7 @@ python src/pipelines/calibrate.py --direction West --start-date 20260118
 Validates the model against images for a specified night, centroids stars, and fits the brightness calibration used in Step 3.
 
 ```zsh
-python src/pipelines/extract_centroids.py --direction West --date 20260118 --update-cam-cal
+python src/pipelines/extract_centroids.py --direction West --date 20260118
 ```
 
 | Flag | Description |
