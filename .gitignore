@@ -10,7 +10,10 @@ wheels/
 .venv
 
 .archive
-data/
+data/**
+!data/Calibration/
+!data/Calibration/matrices/
+!data/Calibration/matrices/*.npy
 out/**
 scripts/
 notebooks/

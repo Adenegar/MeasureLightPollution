@@ -52,7 +52,7 @@ class FisheyeCorrectionModel:
         Raises:
             FileNotFoundError: If no saved Distort matrix exists for the direction
         """
-        distort_path = PROJECT_ROOT / "data" / "Calibration" / f"{direction.lower()}_distort.npy"
+        distort_path = PROJECT_ROOT / "data" / "Calibration" / "matrices" / f"{direction.lower()}_distort.npy"
         if not distort_path.exists():
             raise FileNotFoundError(
                 f"No saved Distort matrix found at {distort_path}. "

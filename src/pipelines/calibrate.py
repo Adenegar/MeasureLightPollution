@@ -46,7 +46,7 @@ class CalibrationConfig:
 
     def __post_init__(self):
         if self.output_dir is None:
-            self.output_dir = PROJECT_ROOT / "data" / "Calibration"
+            self.output_dir = PROJECT_ROOT / "data" / "Calibration" / "matrices"
         else:
             self.output_dir = Path(self.output_dir)
 
