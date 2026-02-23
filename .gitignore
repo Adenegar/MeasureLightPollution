@@ -10,10 +10,25 @@ wheels/
 .venv
 
 .archive
+out/**
+
+# Data directory - ignore all contents, track folder structure only
 data/**
 !data/Calibration/
-!data/Calibration/matrices/
-!data/Calibration/matrices/*.npy
-out/**
+!data/Calibration/.gitkeep
+!data/CloudCamSouth/
+!data/CloudCamSouth/.gitkeep
+!data/CloudCamEast/
+!data/CloudCamEast/.gitkeep
+!data/CloudCamNorth/
+!data/CloudCamNorth/.gitkeep
+!data/CloudCamWest/
+!data/CloudCamWest/.gitkeep
+!data/StarLists/
+!data/StarLists/.gitkeep
+!data/tmp/
+!data/tmp/.gitkeep
+!data/tmp/saved/
+!data/tmp/saved/.gitkeep
 scripts/
 notebooks/
