@@ -16,9 +16,9 @@ If you get an error for the incorrect version of Python:
 uv python install 3.13
 uv venv --python 3.13
 ```
-then install
+then install dependencies
 
-**Data:** Data sources are documented on Sharepoint
+**Data:** 
 
 Put calibration data in:
 

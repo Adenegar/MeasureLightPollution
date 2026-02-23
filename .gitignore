@@ -28,6 +28,12 @@ data/**
 !data/CloudCamWest/
 !data/CloudCamWest/20260118/
 !data/CloudCamWest/20260118/CloudCamWest_20260118UTC070043.fits
+# Calibration data
+!data/Calibration/20260118
+!data/Calibration/20260118/east_centroid_mapping.csv
+!data/Calibration/20260118/north_centroid_mapping.csv
+!data/Calibration/20260118/south_centroid_mapping.csv
+!data/Calibration/20260118/west_centroid_mapping.csv
 !data/StarLists/
 !data/StarLists/usno-bsc.starlist
 !data/StarLists/ybsc5.starlist
