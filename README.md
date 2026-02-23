@@ -26,14 +26,11 @@ Put calibration data in:
 data/CloudCam{direction}/{date}
 ```
 
-Put starlists in 
+Put starlists in:
 
 ```zsh
 data/StarLists
 ```
-
-
-
 
 ## Pipelines
 
