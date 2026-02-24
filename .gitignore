@@ -12,6 +12,11 @@ wheels/
 
 .archive
 out/**
+!out/cals
+!out/cals/east_brightness_cal.json
+!out/cals/north_brightness_cal.json
+!out/cals/south_brightness_cal.json
+!out/cals/west_brightness_cal.json
 
 # Data directory - ignore all contents, track folder structure only
 data/**

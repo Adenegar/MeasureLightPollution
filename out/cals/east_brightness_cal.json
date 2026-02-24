@@ -1,0 +1,10 @@
+{
+  "calibrate_date": "20260118",
+  "gain_coef": 0.0,
+  "exp_time_coef": 0.0,
+  "intercept": 1316.4761435588334,
+  "mean_brightness": 1316.4761435588334,
+  "vmag_intercept": 12.696238073656085,
+  "vmag_r2": 0.9275720861265142,
+  "vmag_std": 0.14913608053427244
+}
