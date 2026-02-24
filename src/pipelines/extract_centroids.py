@@ -47,7 +47,7 @@ warnings.filterwarnings("ignore", category=IllegalSecondWarning)
 
 DIRECTIONS = ["North", "East", "South", "West"]
 ADJACENT_DISTANCE_THRESHOLD = 16  # pixels
-VMAG_MIN = 1.0
+VMAG_MIN = 3.0
 VMAG_MAX = 7.0
 
 # Default time range: 9 PM - 4:20 AM Hawaiian = 7:00 - 14:20 UTC
@@ -194,7 +194,7 @@ def extract_centroids_for_direction(
             catalog = catalog[(catalog["vmag"] > VMAG_MIN) & (catalog["vmag"] < VMAG_MAX)]
 
             # Centroid the filtered catalog
-            cx, cy, _, _, brightness = centroid_starlist(hdul, catalog, measure_brightness=True, subtract_background=True)
+            cx, cy, _, _, brightness = centroid_starlist(hdul, catalog, measure_brightness=True)
             gain = float(hdul[0].header["GAIN"])
             exp_time = float(hdul[0].header["EXP_TIME"])
 
