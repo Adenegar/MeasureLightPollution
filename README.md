@@ -4,29 +4,32 @@ This project provides tools to model camera distortion, model camera light sensi
 
 ## Setup
 
+Create virtual environment
+```zsh
+uv venv --python 3.13
+```
+
+```zsh
+source .venv/bin/activate
+```
+
 Install dependencies:
 
 ```zsh
 uv pip install -e .
 ```
 
-If you get an error for the incorrect version of Python:
-
-```zsh
-uv python install 3.13
-uv venv --python 3.13
-```
-then install dependencies
-
 **Data:** 
 
-Put calibration data in:
+There is a single fits file for each direction and a night of centroids for minimal data to get started. 
+
+Put fits files in:
 
 ```zsh
 data/CloudCam{direction}/{date}
 ```
 
-Put starlists in:
+Starlists can be found in:
 
 ```zsh
 data/StarLists
@@ -38,7 +41,7 @@ The three scripts in `src/pipelines/` are run in order for each camera direction
 
 ### Step 1 — Calibrate the fisheye model
 
-Fits the distortion correction model (Az/El ↔ pixel coordinates) from calibration points.
+Build the Az/El to x/y transformation matrix based on saved pairs (centroided or manual)
 
 ```zsh
 python src/pipelines/calibrate.py --direction West --start-date 20260118
