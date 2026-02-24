@@ -37,7 +37,14 @@ data/StarLists
 
 ## Pipelines
 
-The three scripts in `src/pipelines/` are run in order for each camera direction and date.
+
+1. `calibrate.py` will create the transformation matrix from az/el to x/y using data in data/Calibration/{date}
+
+Note: The repository comes with a pretrained transformation matrix, these are stored in data/Calibration/matrices
+
+2. `extract_centroids.py` will extract centroids from images for a specified date. Brightness measurements will be saved, but you can also use this for updating camera calibrations, saving centroids for matrix calibration, or creating a brightness vs vmag plot. 
+
+3. `measure_brightness.py` measures the brightness for a specified night and converts measurements to visual magnitude per arcsecond squared 
 
 ### Step 1 — Calibrate the fisheye model
 
@@ -73,7 +80,7 @@ python src/pipelines/extract_centroids.py --direction West --date 20260118
 
 ### Step 3 — Measure sky background brightness
 
-For each nighttime image: centroids stars, fits a per-image photometric zero point, and measures median pixel brightness in a 25×25 pixel grid across the sky.
+For each nighttime image: centroids stars, fits a per-image photometric zero point, and measures median pixel brightness using a uniform azel grid
 
 ```zsh
 python src/pipelines/measure_background.py --direction West --date 20260118
